@@ -1,0 +1,92 @@
+# VisionGuard - Automated License Plate Recognition (ALPR) System
+
+This project implements a desktop ALPR application using Python, OpenCV, Tesseract OCR, and the Google Gemini API.
+
+## Features
+
+*   Real-time license plate detection from video feeds.
+*   Image-based license plate recognition.
+*   Logging of recognized license plate numbers to a local SQLite database.
+*   Basic GUI for video display and log viewing.
+
+## Prerequisites
+
+*   **Python 3.7+:**  Download and install from [python.org](https://www.python.org/).
+*   **Tesseract OCR:**  This is *critical* and must be installed *separately*.
+    *   **Windows:** Download the installer from [Tesseract at UB Mannheim](https://github.com/UB-Mannheim/tesseract/wiki).  **Important:** During installation, make sure to add Tesseract to your system's PATH.
+    *   **macOS:**  Install using Homebrew: `brew install tesseract`
+    *   **Linux (Ubuntu/Debian):** `sudo apt-get install tesseract-ocr`
+    *   **Other Linux Distributions:** Use your distribution's package manager (e.g., `yum`, `pacman`).
+* **Verify Tesseract Installation:** After installing, open a new terminal/command prompt and type `tesseract --version`.  If you see version information, it's installed correctly. If not, your PATH is not set up properly.
+* **Google Gemini API Key:**  Obtain an API key from the Google Cloud Console.  This is required for the application to function.  Create a project, enable the Generative Language API, and create an API key.
+
+## Installation and Setup
+
+1.  **Clone the Repository (or Copy Files):**
+    ```bash
+    git clone <your_repository_url>  # If you put this on GitHub
+    # OR
+    # Create the directory structure manually and copy the provided files.
+    ```
+
+2.  **Create Project Directories:**
+    Inside the `VisionGuard-ALPR` directory, create the following directories:
+     - `data/db`
+     - `data/logs`
+     - `src`
+     - `tests`
+     - `docs`
+
+3.  **Create a Virtual Environment (Recommended):**
+    ```bash
+    cd VisionGuard-ALPR
+    python3 -m venv venv  # Or python -m venv venv, depending on your system
+    ```
+
+4.  **Activate the Virtual Environment:**
+    *   **Windows:**
+        ```bash
+        venv\Scripts\activate
+        ```
+    *   **macOS/Linux:**
+        ```bash
+        source venv/bin/activate
+        ```
+
+5.  **Install Dependencies:**
+    ```bash
+    pip install -r requirements.txt
+    ```
+
+6.  **Configure the Application:**
+    *   Open `config.ini` in a text editor.
+    *   **`APIKey`:**  Paste your Google Gemini API key here.  **DO NOT** commit your API key to a public repository!
+    *   `CameraIndex`:  If you have multiple cameras, you might need to change this (0 is usually the default webcam).
+
+## Running the Application
+
+1.  **Make sure your virtual environment is activated.**
+2.  **Run the main script:**
+    ```bash
+    python src/main.py
+    ```
+
+## Usage
+
+*   The application will display the video feed from your webcam.
+*   Detected license plates and their timestamps will be displayed in the log window.
+*   **Snapshot Button:**  Saves a snapshot of the current video frame.
+*   **Load Image Button:** Allows you to select a still image for processing.
+*   **Log:** Shows the detected license plates.
+
+## Troubleshooting
+
+*   **`ImportError` or `ModuleNotFoundError`:**  Make sure your virtual environment is activated and all dependencies are installed (`pip install -r requirements.txt`).
+*   **`ValueError: Unable to open video source`:**  Check your `CameraIndex` in `config.ini`.  Try different values (0, 1, 2, etc.).  Make sure your camera is connected and working.
+*   **Tesseract Errors:**  Ensure Tesseract is installed correctly and in your system's PATH.  Try running `tesseract --version` in your terminal.
+*   **API Errors:**  Verify your API key is correct and that you have enabled the Generative Language API in the Google Cloud Console. Check the log file (`data/logs/alpr_log.txt`) for detailed error messages.
+* **If the detection is not working** Check the returned structure from the gemini API call, and adjust the code inside the `detect_license_plate_api` function accordingly.
+
+## Running Tests
+Navigate to project directory and activate your environment, then:
+python -m unittest discover tests
