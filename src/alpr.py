@@ -50,7 +50,7 @@ class ALPRProcessor:
                 "contents": [
                     {
                         "parts": [
-                            {"text": "Extract the license plate number as JSON {\\\"plate\\\": \\\"result\\\"} from this image."},
+                            {"text": "Extract the license plate number from this image. Respond only with the license plate number, nothing else."}, # Simpler, more direct prompt
                             {"inline_data": {"mime_type": "image/jpeg", "data": base64_encoded}},
                         ]
                     }
@@ -58,32 +58,18 @@ class ALPRProcessor:
             }
 
             response = requests.post(self.api_endpoint, headers=headers, data=json.dumps(data))
-            response.raise_for_status()
+            response.raise_for_status()  # Raise HTTPError for bad responses (4xx or 5xx)
             response_json = response.json()
             utils.log_message(f"Gemini API response: {response_json}")
 
-            try:
-                text_response = response_json['candidates'][0]['content']['parts'][0]['text']
-                start_index = text_response.find('{')
-                end_index = text_response.rfind('}') + 1
-
-                if start_index == -1 or end_index == -1:
-                     utils.log_message(f"Gemini API response does not conatain the expected JSON format")
-                     return None
-
-                json_str = text_response[start_index:end_index]
-                result_json = json.loads(json_str)
-                plate_text = result_json.get('plate')
-
-                if not plate_text or plate_text.upper() == 'RESULT':
-                    return None
-
-                image = Image.open(BytesIO(image_bytes))
-                return image
-
-            except (KeyError, IndexError, json.JSONDecodeError) as e:
-                utils.log_message(f"Error parsing Gemini API response: {e}", level="ERROR")
+            # --- Robust Response Parsing (VERY IMPORTANT) ---
+            plate_text = self.extract_plate_text(response_json)
+            if plate_text:
+                 image = Image.open(BytesIO(image_bytes))
+                 return image
+            else:
                 return None
+
 
         except requests.exceptions.RequestException as e:
             utils.log_message(f"Error calling Gemini API: {e}", level="ERROR")
@@ -91,6 +77,52 @@ class ALPRProcessor:
         except Exception as e:
             utils.log_message(f"An unexpected error occurred during API detection: {e}", "ERROR")
             return None
+
+    def extract_plate_text(self, response_json):
+        """
+        Robustly extracts the license plate text from the Gemini API response.
+        Handles various potential response structures and error conditions.
+        """
+        try:
+            # Check for errors in the response first
+            if "error" in response_json:
+                error_message = response_json["error"].get("message", "Unknown error")
+                utils.log_message(f"Gemini API returned an error: {error_message}", level="ERROR")
+                return None
+
+            # Check for candidates and content
+            if "candidates" not in response_json or not response_json["candidates"]:
+                utils.log_message("Gemini API response missing 'candidates' or 'candidates' is empty.", level="WARNING")
+                return None
+
+            candidate = response_json["candidates"][0]  # Get the first candidate
+
+            if "content" not in candidate or "parts" not in candidate["content"]:
+                utils.log_message("Gemini API response missing 'content' or 'parts' in candidate.", level="WARNING")
+                return None
+
+            parts = candidate["content"]["parts"]
+            if not parts:
+                utils.log_message("Gemini API: 'parts' is empty in candidate.", level="WARNING")
+                return None
+
+
+            # Iterate through parts to find text
+            for part in parts:
+                if "text" in part:
+                    plate_text = part["text"].strip()
+                    # Basic validation: check for empty string and potentially filter out very short strings
+                    if plate_text and len(plate_text) > 2:  # Consider plates with at least 3 characters
+                        return plate_text
+
+            utils.log_message("Gemini API: No text found in any 'parts' of the response.", level="WARNING")
+            return None
+
+        except (KeyError, IndexError, TypeError) as e:
+            utils.log_message(f"Error parsing Gemini API response: {e}", level="ERROR")
+            utils.log_message(f"Problematic response JSON: {response_json}", level="DEBUG") # Log the full response for debugging
+            return None
+
 
     def perform_ocr(self, image):
         try:
