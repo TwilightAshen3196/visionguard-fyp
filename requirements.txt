@@ -1,5 +1,6 @@
 opencv-python
-pytesseract
 pillow
-requests
-protobuf
+torch  # Required for YOLOv8
+torchvision
+ultralytics  # YOLOv8 library
+easyocr
