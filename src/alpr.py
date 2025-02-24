@@ -1,136 +1,88 @@
 import cv2
-import pytesseract
-import requests
-import json
+import easyocr
 import src.utils as utils
-import base64
-from io import BytesIO
-from PIL import Image
-
+from ultralytics import YOLO  # Import YOLO
+import numpy as np
 
 class ALPRProcessor:
     def __init__(self, db_conn, config):
         self.db_conn = db_conn
         self.config = config
-        self.api_key = config['API']['APIKey']
-        self.api_endpoint = config['API']['APIEndpoint']
-        utils.log_message(f"Using API for license plate detection at {self.api_endpoint}.")
+        self.model = YOLO('yolov8n.pt')  # Load a pre-trained YOLOv8n model
+        self.reader = easyocr.Reader(['en'])  # Initialize EasyOCR for English
+        utils.log_message("Using local YOLOv8 and EasyOCR for license plate detection and recognition.")
 
 
     def process_frame(self, frame):
-        license_plate_image = self.detect_license_plate_api(frame)
+        # 1. License Plate Detection (YOLOv8)
+        results = self.model(frame)  # Run YOLOv8 inference
+        license_plate_coords = self.extract_license_plate_coordinates(results)
 
-        if license_plate_image is None:
-            return None
+        if license_plate_coords is None:
+            return None  # No plate detected
 
-        plate_number = self.perform_ocr(license_plate_image)
-        if not plate_number:
-            return None
+        # 2. Crop and OCR (EasyOCR)
+        for x1, y1, x2, y2 in license_plate_coords:
+            x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+            license_plate_crop = frame[y1:y2, x1:x2]
 
-        timestamp = utils.get_current_timestamp()
-        plate_data = {
-            'plate_number': plate_number,
-            'image_path': 'N/A',
-            'detection_time': timestamp,
-            'location': 'N/A',
-            'user_id': 'N/A'
-        }
-        db_id = self.db_conn.insert_plate_data(plate_data)
-        plate_data['id'] = db_id
-        return plate_data
+            # Run EasyOCR on the cropped image
+            ocr_result = self.reader.readtext(license_plate_crop)
 
-    def detect_license_plate_api(self, frame):
-        try:
-            _, encoded_image = cv2.imencode(".jpg", frame)
-            image_bytes = encoded_image.tobytes()
-            base64_encoded = base64.b64encode(image_bytes).decode("utf-8")
+            plate_number = self.extract_plate_number(ocr_result) # Extract the plate number
+            if not plate_number:
+                continue # If no plate was found, continue to the next detection.
 
-            headers = {"Content-Type": "application/json"}
-            data = {
-                "contents": [
-                    {
-                        "parts": [
-                            {"text": "Extract the license plate number from this image. Respond only with the license plate number, nothing else."}, # Simpler, more direct prompt
-                            {"inline_data": {"mime_type": "image/jpeg", "data": base64_encoded}},
-                        ]
-                    }
-                ]
+
+            # 3. Data Logging (Database)
+            timestamp = utils.get_current_timestamp()
+            plate_data = {
+                'plate_number': plate_number,
+                'image_path': 'N/A',
+                'detection_time': timestamp,
+                'location': 'N/A',
+                'user_id': 'N/A'
             }
+            db_id = self.db_conn.insert_plate_data(plate_data)
+            plate_data['id'] = db_id
+            return plate_data # Return the first detected plate
 
-            response = requests.post(self.api_endpoint, headers=headers, data=json.dumps(data))
-            response.raise_for_status()  # Raise HTTPError for bad responses (4xx or 5xx)
-            response_json = response.json()
-            utils.log_message(f"Gemini API response: {response_json}")
+        return None # Nothing detected
 
-            # --- Robust Response Parsing (VERY IMPORTANT) ---
-            plate_text = self.extract_plate_text(response_json)
-            if plate_text:
-                 image = Image.open(BytesIO(image_bytes))
-                 return image
-            else:
-                return None
-
-
-        except requests.exceptions.RequestException as e:
-            utils.log_message(f"Error calling Gemini API: {e}", level="ERROR")
-            return None
-        except Exception as e:
-            utils.log_message(f"An unexpected error occurred during API detection: {e}", "ERROR")
-            return None
-
-    def extract_plate_text(self, response_json):
+    def extract_license_plate_coordinates(self, results):
+        """Extracts bounding box coordinates of detected license plates."""
+        coordinates = []
+        for result in results:
+            boxes = result.boxes.cpu().numpy()
+            for box in boxes:
+                # Filter the current object class, if it is not a car, then continue
+                if result.names[int(box.cls[0])] != 'car':
+                    continue
+                x1, y1, x2, y2 = box.xyxy[0]
+                coordinates.append((x1, y1, x2, y2))
+        return coordinates
+    def extract_plate_number(self, ocr_result):
         """
-        Robustly extracts the license plate text from the Gemini API response.
-        Handles various potential response structures and error conditions.
+        Extracts the license plate number from the EasyOCR result.
+        Applies filtering and returns the most likely candidate.
         """
-        try:
-            # Check for errors in the response first
-            if "error" in response_json:
-                error_message = response_json["error"].get("message", "Unknown error")
-                utils.log_message(f"Gemini API returned an error: {error_message}", level="ERROR")
-                return None
-
-            # Check for candidates and content
-            if "candidates" not in response_json or not response_json["candidates"]:
-                utils.log_message("Gemini API response missing 'candidates' or 'candidates' is empty.", level="WARNING")
-                return None
-
-            candidate = response_json["candidates"][0]  # Get the first candidate
-
-            if "content" not in candidate or "parts" not in candidate["content"]:
-                utils.log_message("Gemini API response missing 'content' or 'parts' in candidate.", level="WARNING")
-                return None
-
-            parts = candidate["content"]["parts"]
-            if not parts:
-                utils.log_message("Gemini API: 'parts' is empty in candidate.", level="WARNING")
-                return None
-
-
-            # Iterate through parts to find text
-            for part in parts:
-                if "text" in part:
-                    plate_text = part["text"].strip()
-                    # Basic validation: check for empty string and potentially filter out very short strings
-                    if plate_text and len(plate_text) > 2:  # Consider plates with at least 3 characters
-                        return plate_text
-
-            utils.log_message("Gemini API: No text found in any 'parts' of the response.", level="WARNING")
+        if not ocr_result:
             return None
 
-        except (KeyError, IndexError, TypeError) as e:
-            utils.log_message(f"Error parsing Gemini API response: {e}", level="ERROR")
-            utils.log_message(f"Problematic response JSON: {response_json}", level="DEBUG") # Log the full response for debugging
-            return None
+        best_candidate = ""
+        highest_confidence = 0.0
 
+        for (bbox, text, prob) in ocr_result:
+            # Basic filtering: Remove spaces and common OCR errors
+            text = text.replace(" ", "").upper()
+            text = text.replace("O", "0")  # Common OCR mistake: O instead of 0
+            text = text.replace("I", "1")  # Common OCR mistake: I instead of 1
+            text = text.replace(" ", "")   #Removes spaces
 
-    def perform_ocr(self, image):
-        try:
-            gray_image = image.convert('L')
-            text = pytesseract.image_to_string(gray_image, config='--psm 6')
-            text = text.strip()
-            utils.log_message(f"OCR result: {text}")
-            return text
-        except Exception as e:
-            utils.log_message(f"Error during OCR: {e}", level="ERROR")
-            return None
+            # Check for alphanumeric characters (you can customize this)
+            if text.isalnum() and 3 <= len(text) <= 10:  # Example length constraint
+                if prob > highest_confidence:
+                    best_candidate = text
+                    highest_confidence = prob
+        utils.log_message(f"Extracted text: {best_candidate}, confidence = {highest_confidence}")
+        return best_candidate
