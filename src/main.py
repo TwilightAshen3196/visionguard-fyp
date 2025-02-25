@@ -15,55 +15,43 @@ config.read('config.ini')
 
 class ALPRApp:
     def __init__(self, window, window_title):
+        print("DEBUG: ALPRApp.__init__ started")
         self.window = window
         self.window.title(window_title)
-        self.video_source = int(config['Camera']['CameraIndex'])
-        self.vid = None  # Initialize to None
+        print("DEBUG: GUI setup (window, title) done")
+
         self.db_conn = db.connect_to_db()
+        print("DEBUG: db_conn initialized successfully")
         self.alpr_processor = alpr.ALPRProcessor(self.db_conn, config)
-        self.canvas = None  # Initialize canvas to None
+        print("DEBUG: alpr_processor initialized successfully")
+
+        self.image_display_panel = None # Panel to display loaded images/videos
+        print("DEBUG: image_display_panel initialized to None")
 
         # --- GUI Elements ---
-        self.btn_snapshot = ttk.Button(window, text="Snapshot", command=self.snapshot, state=tk.DISABLED)  # Initially disabled
-        self.btn_snapshot.pack(side=tk.LEFT, padx=5, pady=5)
-
         self.btn_load_image = ttk.Button(window, text="Load Image", command=self.load_image)
         self.btn_load_image.pack(side=tk.LEFT, padx=5, pady=5)
+        print("DEBUG: Load Image button created")
 
-        self.btn_load_video = ttk.Button(window, text="Load Video", command=self.load_video)  # New button
+        self.btn_load_video = ttk.Button(window, text="Load Video", command=self.load_video)
         self.btn_load_video.pack(side=tk.LEFT, padx=5, pady=5)
+        print("DEBUG: Load Video button created")
 
         self.log_text = tk.Text(window, height=10, width=80)
         self.log_text.pack(pady=5)
         self.log_text.config(state=tk.DISABLED)
+        print("DEBUG: Log Text area created")
 
-        self.delay = 15
-        self.is_video_processing = False # Add a flag
-
-        # Try to open the video source, handle errors gracefully
-        try:
-            self.vid = cv2.VideoCapture(self.video_source)
-            if not self.vid.isOpened():
-                raise ValueError("Unable to open video source", self.video_source)
-
-            # Create canvas *only* if video capture is successful
-            self.canvas = tk.Canvas(window, width=self.vid.get(cv2.CAP_PROP_FRAME_WIDTH), height=self.vid.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            self.canvas.pack()
-            self.btn_snapshot.config(state=tk.NORMAL)  # Enable snapshot button
-            self.update() # Start the update loop only if the camera is initialized.
-
-        except Exception as e:
-            utils.log_message(f"Camera initialization failed: {e}", level="ERROR")
-            self.vid = None  # Ensure vid is None on failure
-            utils.show_error(window, f"Camera Error: {e}")  # Use show_error for consistency
+        self.delay = 30 # Increased delay for less CPU usage in video processing
+        self.is_video_processing = False
+        self.current_video_path = None # Store the path of the currently loaded video
+        print("DEBUG: Delay, is_video_processing, current_video_path initialized")
 
 
+        print("DEBUG: ALPRApp.__init__ finished")
+        self.window.protocol("WM_DELETE_WINDOW", self.on_closing)
+        self.window.mainloop()
 
-    def snapshot(self):
-        if self.vid:
-            ret, frame = self.vid.read()
-            if ret:
-                cv2.imwrite("snapshot-" + time.strftime("%Y%m%d-%H%M%S") + ".jpg", cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
 
     def load_image(self):
         file_path = filedialog.askopenfilename(filetypes=[("Image Files", "*.png;*.jpg;*.jpeg")])
@@ -72,7 +60,8 @@ class ALPRApp:
                 image = cv2.imread(file_path)
                 if image is None:
                     raise ValueError(f"Could not open or read image at {file_path}")
-                threading.Thread(target=self.process_frame, args=(image,)).start()
+                self.display_image(image) # Display the loaded image
+                threading.Thread(target=self.process_image_thread, args=(image,)).start() # Process in thread
             except Exception as e:
                 utils.log_message(f"Error loading image: {e}", level="ERROR")
                 self.update_log(f"Error loading image: {e}")
@@ -81,70 +70,72 @@ class ALPRApp:
         file_path = filedialog.askopenfilename(filetypes=[("Video Files", "*.mp4;*.avi;*.mov")]) #Added supported extensions
         if file_path:
             try:
-                if self.vid and self.vid.isOpened(): # Close current video if processing.
-                  self.vid.release()
-                self.vid = cv2.VideoCapture(file_path)
-                if not self.vid.isOpened():
-                    raise ValueError(f"Could not open or read video at {file_path}")
-
-                #Update canvas
-                if self.canvas is None: # If the canvas haven't been created (no camera)
-                    self.canvas = tk.Canvas(self.window, width=self.vid.get(cv2.CAP_PROP_FRAME_WIDTH), height=self.vid.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                    self.canvas.pack()
-
-                # Set video processing
-                self.is_video_processing = True
-                # Start a single thread.
-                threading.Thread(target=self.process_video).start()
-
+                self.current_video_path = file_path # Store the video path
+                self.is_video_processing = True # Set video processing flag
+                threading.Thread(target=self.process_video).start() # Start video processing thread
             except Exception as e:
                 utils.log_message(f"Error loading video: {e}", level="ERROR")
                 self.update_log(f"Error loading video: {e}")
                 utils.show_error(self.window, f"Video Load Error: {e}") # Display the error
 
+    def display_image(self, image):
+        """Displays the given OpenCV image in the GUI."""
+        try:
+            if self.image_display_panel is not None: # Clear previous image if any
+                self.image_display_panel.destroy()
+            self.image_display_panel = tk.Label(self.window) # Create a Label for image display
+            self.image_display_panel.pack()
+            image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB) # Convert to RGB
+            image_pil = Image.fromarray(image_rgb) # Convert to PIL Image
+            image_tk = ImageTk.PhotoImage(image_pil) # Convert to Tk PhotoImage
+            self.image_display_panel.config(image=image_tk) # Configure the Label to display image
+            self.image_display_panel.image = image_tk # Keep a reference to prevent garbage collection
+        except Exception as e:
+            utils.log_message(f"Error displaying image: {e}", level="ERROR")
+            self.update_log(f"Error displaying image: {e}")
+
 
     def process_video(self):
-        while self.is_video_processing:  # Use the flag for control
-            ret, frame = self.vid.read()
-            if ret:
-                self.process_frame(frame)
-                # Update the canvas
-                self.photo = ImageTk.PhotoImage(image=Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)))
-                if self.canvas: # Check if canvas exists.
-                    self.canvas.create_image(0, 0, image=self.photo, anchor=tk.NW)
-                time.sleep(self.delay / 1000)  # Control frame rate
-            else:
-                # End of video (or error).
-                self.is_video_processing = False # Reset the flag
-                self.vid.release()
-                self.vid = None
-                break  # Exit the loop
+        video_path = self.current_video_path
+        if not video_path:
+            return # Exit if no video path is set
 
+        vid = cv2.VideoCapture(video_path) # Open video capture
+        if not vid.isOpened():
+            utils.log_message(f"Error: Could not open video file: {video_path}", level="ERROR")
+            self.update_log(f"Error: Could not open video file: {video_path}")
+            self.is_video_processing = False # Reset flag
+            return
 
-    def update(self):
-        if self.vid:  # Only update if self.vid is not None
-            ret, frame = self.vid.read()
-            if ret:
-                self.photo = ImageTk.PhotoImage(image=Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)))
-                if self.canvas:
-                    self.canvas.create_image(0, 0, image=self.photo, anchor=tk.NW)
-                threading.Thread(target=self.process_frame, args=(frame.copy(),)).start()
-
-        #Always schedule the next update check, but only camera will update the frame.
-        self.window.after(self.delay, self.update)
-
-
-
-    def process_frame(self, frame):
         try:
-            plate_data = self.alpr_processor.process_frame(frame)
-            if plate_data:
+            while self.is_video_processing:  # Control loop with the flag
+                ret, frame = vid.read() # Read frame
+                if not ret: # End of video or error
+                    break
+
+                self.display_image(frame) # Display current frame
+                self.process_frame_thread(frame.copy()) # Process frame in thread
+
+                time.sleep(self.delay / 1000) # Control frame rate and reduce CPU usage
+        finally: # Ensure resources are released even if errors occur.
+            vid.release() # Release video capture
+            self.is_video_processing = False # Reset flag
+            self.current_video_path = None # Clear current video path
+            utils.log_message("Video processing finished.")
+            self.update_log("Video processing finished.")
+
+
+    def process_image_thread(self, image): # Threaded function for image processing
+        try:
+            plate_data = self.alpr_processor.process_frame(image) # Process the image
+            if plate_data: # If plate data is detected
                 log_message = (f"Detected: {plate_data['plate_number']}, "
                                f"Timestamp: {plate_data['detection_time']}")
-                self.update_log(log_message)
+                self.update_log(log_message) # Update the log
         except Exception as e:
-            utils.log_message(f"Error processing frame: {e}", level="ERROR")
+            utils.log_message(f"Error processing frame in thread: {e}", level="ERROR")
             self.update_log(f"Error processing frame: {e}")
+
 
     def update_log(self, message):
         self.log_text.config(state=tk.NORMAL)
@@ -153,19 +144,17 @@ class ALPRApp:
         self.log_text.see(tk.END)
 
     def on_closing(self):
-        self.is_video_processing = False # Set to stop.
-        if self.vid and self.vid.isOpened():
-            self.vid.release()
+        self.is_video_processing = False # Set to stop video processing loop
         if self.db_conn:
-            self.db_conn.close()
-        self.window.destroy()
-        utils.log_message("Application closed.")
+            self.db_conn.close() # Close database connection
+        self.window.destroy() # Destroy main window
+        utils.log_message("Application closed.") # Log application closing
 
 
 if __name__ == "__main__":
     try:
         root = tk.Tk()
-        app = ALPRApp(root, "VisionGuard ALPR System")
+        app = ALPRApp(root, "VisionGuard ALPR System") # Create and run the app
     except Exception as e:
         utils.log_message(f"Critical error during startup: {e}", level="CRITICAL")
         print(f"Critical error: {e}. See log file for details.")

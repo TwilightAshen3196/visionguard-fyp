@@ -9,7 +9,6 @@ import configparser
 test_config = configparser.ConfigParser()
 test_config['Database'] = {}
 test_config['Logging'] = {}
-test_config['Camera'] = {}
 
 
 class TestALPRProcessor(unittest.TestCase):
@@ -17,11 +16,9 @@ class TestALPRProcessor(unittest.TestCase):
     @patch('src.alpr.YOLO') #Mock yolo
     @patch('src.alpr.easyocr.Reader')  # Mock EasyOCR
     def test_process_frame_success(self, mock_easyocr_reader, mock_yolo):
-
         mock_db_conn = MagicMock()
         alpr_processor = src.alpr.ALPRProcessor(mock_db_conn, test_config)
         dummy_image = np.zeros((100, 200, 3), dtype=np.uint8)
-
 
         # Mock YOLO results
         mock_yolo_results = [MagicMock()]

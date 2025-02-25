@@ -1,6 +1,6 @@
 opencv-python
 pillow
-torch  # Required for YOLOv8
+torch
 torchvision
-ultralytics  # YOLOv8 library
+ultralytics
 easyocr
