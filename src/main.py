@@ -5,7 +5,7 @@ import cv2
 import threading
 import time
 import src.alpr as alpr
-import src.database as db
+import src.database as db # Import database module, but not connection class directly here
 import src.utils as utils
 import configparser
 
@@ -20,9 +20,8 @@ class ALPRApp:
         self.window.title(window_title)
         print("DEBUG: GUI setup (window, title) done")
 
-        self.db_conn = db.connect_to_db()
-        print("DEBUG: db_conn initialized successfully")
-        self.alpr_processor = alpr.ALPRProcessor(self.db_conn, config)
+
+        self.alpr_processor = alpr.ALPRProcessor(config) # Database connection is no longer passed here
         print("DEBUG: alpr_processor initialized successfully")
 
         self.image_display_panel = None # Panel to display loaded images/videos
@@ -126,15 +125,37 @@ class ALPRApp:
 
 
     def process_image_thread(self, image): # Threaded function for image processing
+        db_conn = None # Initialize db_conn to None
         try:
-            plate_data = self.alpr_processor.process_frame(image) # Process the image
+            db_conn = db.connect_to_db() # Create NEW database connection for THIS thread
+            plate_data = self.alpr_processor.process_frame(frame=image, db_conn=db_conn) # Process the image, pass db_conn
             if plate_data: # If plate data is detected
                 log_message = (f"Detected: {plate_data['plate_number']}, "
                                f"Timestamp: {plate_data['detection_time']}")
                 self.update_log(log_message) # Update the log
         except Exception as e:
+            utils.log_message(f"Error processing image in thread: {e}", level="ERROR")
+            self.update_log(f"Error processing image: {e}")
+        finally:
+            if db_conn:
+                db_conn.close() # Close the database connection in THIS thread
+
+
+    def process_frame_thread(self, frame): # Threaded function for video frame processing
+        db_conn = None # Initialize db_conn to None
+        try:
+            db_conn = db.connect_to_db() # Create NEW database connection for THIS thread
+            plate_data = self.alpr_processor.process_frame(frame=frame, db_conn=db_conn) # Process frame, pass db_conn
+            if plate_data:
+                log_message = (f"Detected: {plate_data['plate_number']}, "
+                               f"Timestamp: {plate_data['detection_time']}")
+                self.update_log(log_message)
+        except Exception as e:
             utils.log_message(f"Error processing frame in thread: {e}", level="ERROR")
             self.update_log(f"Error processing frame: {e}")
+        finally:
+            if db_conn:
+                db_conn.close() # Ensure database connection is closed in THIS thread
 
 
     def update_log(self, message):
@@ -145,8 +166,8 @@ class ALPRApp:
 
     def on_closing(self):
         self.is_video_processing = False # Set to stop video processing loop
-        if self.db_conn:
-            self.db_conn.close() # Close database connection
+        if self.db_conn: # No longer instance variable, remove this line.
+            pass # self.db_conn.close() # Close database connection - no longer needed here.
         self.window.destroy() # Destroy main window
         utils.log_message("Application closed.") # Log application closing
 

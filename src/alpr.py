@@ -5,15 +5,14 @@ from ultralytics import YOLO  # Import YOLO
 import numpy as np
 
 class ALPRProcessor:
-    def __init__(self, db_conn, config):
-        self.db_conn = db_conn
+    def __init__(self, config): # No db_conn passed here anymore.
         self.config = config
         self.model = YOLO('yolov8n.pt')  # Load a pre-trained YOLOv8n model
         self.reader = easyocr.Reader(['en'])  # Initialize EasyOCR for English
         utils.log_message("Using local YOLOv8 and EasyOCR for license plate detection and recognition.")
 
 
-    def process_frame(self, frame):
+    def process_frame(self, frame, db_conn): # db_conn is now passed as argument
         # 1. License Plate Detection (YOLOv8)
         results = self.model(frame)  # Run YOLOv8 inference
         license_plate_coords = self.extract_license_plate_coordinates(results)
@@ -34,7 +33,7 @@ class ALPRProcessor:
                 continue # If no plate was found, continue to the next detection.
 
 
-            # 3. Data Logging (Database)
+            # 3. Data Logging (Database) - Use the passed db_conn
             timestamp = utils.get_current_timestamp()
             plate_data = {
                 'plate_number': plate_number,
@@ -43,7 +42,7 @@ class ALPRProcessor:
                 'location': 'N/A',
                 'user_id': 'N/A'
             }
-            db_id = self.db_conn.insert_plate_data(plate_data)
+            db_id = db_conn.insert_plate_data(plate_data) # Use the passed db_conn to insert
             plate_data['id'] = db_id
             return plate_data # Return the first detected plate
 
